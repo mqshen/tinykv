@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/pingcap/errors"
 
 	"github.com/pingcap-incubator/tinykv/kv/coprocessor"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
@@ -38,22 +39,70 @@ func NewServer(storage storage.Storage) *Server {
 // Raw API.
 func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kvrpcpb.RawGetResponse, error) {
 	// Your Code Here (1).
-	return nil, nil
+	storageReader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	values, err := storageReader.GetCF(req.Cf, req.Key)
+	if err != nil && errors.IsNotFound(err) {
+		return &kvrpcpb.RawGetResponse {
+			NotFound: true,
+		}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &kvrpcpb.RawGetResponse {
+		Value: values,
+		NotFound: values == nil,
+	}, nil
 }
 
 func (server *Server) RawPut(_ context.Context, req *kvrpcpb.RawPutRequest) (*kvrpcpb.RawPutResponse, error) {
 	// Your Code Here (1).
-	return nil, nil
+	return nil, server.storage.Write(req.Context, []storage.Modify {
+		{
+			storage.Put{
+				Cf: req.Cf,
+				Key: req.Key,
+				Value: req.Value,
+			},
+		},
+	})
 }
 
 func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest) (*kvrpcpb.RawDeleteResponse, error) {
 	// Your Code Here (1).
-	return nil, nil
+	return nil, server.storage.Write(req.Context, []storage.Modify {
+		{
+			storage.Delete{
+				Cf: req.Cf,
+				Key: req.Key,
+			},
+		},
+	})
 }
 
 func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*kvrpcpb.RawScanResponse, error) {
 	// Your Code Here (1).
-	return nil, nil
+	storageReader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	iter := storageReader.IterCF(req.Cf)
+	iter.Seek(req.StartKey)
+	var kvs []*kvrpcpb.KvPair
+	for i := uint32(0); i < req.Limit && iter.Valid(); i++ {
+		item := iter.Item()
+		val, _ := item.ValueCopy(nil)
+		kvs = append(kvs, &kvrpcpb.KvPair {Key: item.KeyCopy(nil), Value: val})
+		iter.Next()
+	}
+	iter.Close()
+	return &kvrpcpb.RawScanResponse {
+		Kvs: kvs,
+	}, nil
 }
 
 // Raft commands (tinykv <-> tinykv)
